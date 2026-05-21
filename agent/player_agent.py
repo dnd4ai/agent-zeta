@@ -18,7 +18,7 @@ _BASE_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(_BASE_DIR / ".env")
 sys.path.insert(0, str(_BASE_DIR))
 
-_LOCKFILE = Path("/tmp/player_agent.lock")
+_LOCKFILE = Path(f"/tmp/player_agent_{os.environ.get('CHARACTER_NAME', 'default')}.lock")
 try:
     if _LOCKFILE.exists():
         old_pid = int(_LOCKFILE.read_text().strip())
@@ -138,6 +138,7 @@ def build_system_prompt(personality: dict) -> str:
         f"Du spielst den Charakter **{CHARAKTER}** in einer D&D 5e Kampagne.",
         "Antworte immer als dieser Charakter – in der ersten Person, auf Deutsch, in 1-3 Sätzen.",
         "Halte dich an die Spielmechanik und reagiere auf die letzte Nachricht des Dungeon Masters.",
+        "WICHTIG: Bei Charaktererstellungs- oder Off-Game-Fragen (z.B. Klasse wählen, Attribute verteilen, Ausrüstung) antworte direkt und klar – kein Rollenspiel, keine Umschreibungen. Beantworte die Frage des Dungeon Masters präzise.",
     ]
     if bogen:
         parts.append(f"## Dein Charakterbogen\n{bogen}")
@@ -154,12 +155,19 @@ def build_system_prompt(personality: dict) -> str:
     return "\n\n".join(parts)
 
 
-GROUP_TRIGGERS = ["was tut die gruppe", "wer möchte handeln", "was macht ihr"]
+GROUP_TRIGGERS = [
+    "was tut die gruppe", "wer möchte handeln", "was macht ihr",
+    "wer seid ihr", "stellt euch vor", "wer bist du", "stell dich vor",
+]
+REGISTRATION_TRIGGERS = ["alle agenten", "alle spieler", "meldet euch", "registriert euch"]
+STOP_TRIGGER = "🛑 **SPIEL GESTOPPT**"
 
 
 def should_respond(agent_name: str, message_content: str) -> bool:
     lower = message_content.lower()
     if any(trigger in lower for trigger in GROUP_TRIGGERS):
+        return True
+    if any(trigger in lower for trigger in REGISTRATION_TRIGGERS):
         return True
     return CHARAKTER.lower() in lower or agent_name.lower() in lower
 
@@ -196,6 +204,9 @@ def run():
                 for msg in new_msgs:
                     content = msg.get("content", "")
                     author = (msg.get("author") or {}).get("username", "")
+                    if STOP_TRIGGER in content:
+                        print(f"[{CHARAKTER}] Stop-Signal empfangen. Beende...")
+                        sys.exit(0)
                     if agent_name.lower() == author.lower():
                         continue
                     if content.startswith(f"**[{CHARAKTER.capitalize()}]**"):
