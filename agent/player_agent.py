@@ -14,7 +14,9 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+_BASE_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(_BASE_DIR / ".env")
+sys.path.insert(0, str(_BASE_DIR))
 
 _LOCKFILE = Path("/tmp/player_agent.lock")
 try:
@@ -35,8 +37,7 @@ atexit.register(lambda: _LOCKFILE.unlink(missing_ok=True))
 from dnd4ai_core.llm import create_adapter
 from dnd4ai_core.discord_agent import send_message
 
-BASE_DIR = Path(__file__).resolve().parents[1]
-CHARACTER_DIR = BASE_DIR / "character"
+CHARACTER_DIR = _BASE_DIR / "character"
 
 CHARAKTER = os.environ.get("CHARACTER_NAME", "")
 if not CHARAKTER:
