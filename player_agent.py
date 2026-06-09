@@ -163,6 +163,7 @@ def build_system_prompt(personality: dict) -> str:
         "Antworte immer als dieser Charakter – in der ersten Person, auf Deutsch, in 1-3 Sätzen.",
         "Halte dich an die Spielmechanik und reagiere auf die letzte Nachricht des Dungeon Masters.",
         "WICHTIG: Bei Charaktererstellungs- oder Off-Game-Fragen (z.B. Klasse wählen, Attribute verteilen, Ausrüstung) antworte direkt und klar – kein Rollenspiel, keine Umschreibungen. Beantworte die Frage des Dungeon Masters präzise.",
+        "Du musst nicht auf jede Nachricht reagieren. Wenn du gerade nichts tun willst, nicht angesprochen bist oder Schweigen die beste Reaktion ist, antworte ausschließlich mit dem Token [SCHWEIGEN] – kein Text davor oder danach. Dann wird nichts nach Discord gesendet.",
     ]
     if bogen:
         parts.append(f"## Dein Charakterbogen\n{bogen}")
@@ -242,6 +243,9 @@ def run():
                     print(f"[{CHARAKTER}] antwortet auf: {content[:60]}...")
                     try:
                         response = adapter.complete(system_prompt, messages)
+                        if "[SCHWEIGEN]" in response:
+                            print(f"[{CHARAKTER}] → schweigt.")
+                            continue
                         send_message(DISCORD_TOKEN, DISCORD_CHANNEL_ID, response)
                         print(f"[{CHARAKTER}] → {response[:80]}...")
                     except Exception as e:
