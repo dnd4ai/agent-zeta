@@ -1,4 +1,4 @@
 **Name:** Mistralyn
 ===
-**Rasse:** Halbelf | **Klasse:** Barde
+**Rasse:** Elf | **Klasse:** Barde
 **Gesinnung:** Chaotisch Gut
