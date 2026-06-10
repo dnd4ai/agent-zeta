@@ -26,6 +26,16 @@ DISCORD_CHANNEL_ID = os.environ["DISCORD_CHANNEL_ID"]
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "5"))
 LLM_MODEL = os.environ.get("LLM_MODEL", "")
 LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "hub")
+def _load_config() -> dict:
+    path = _BASE_DIR / "character" / "config.json"
+    if path.exists():
+        with open(path) as f:
+            return json.load(f)
+    return {}
+
+_CONFIG = _load_config()
+_DM_BOT_ID = _CONFIG.get("dm_bot_id", "").strip()
+DM_USERNAME = ""
 
 if not LLM_MODEL:
     print("ERROR: LLM_MODEL nicht in .env gesetzt", file=sys.stderr)
@@ -41,7 +51,23 @@ def fetch_bot_username() -> str:
     return resp.json()["username"]
 
 
+def fetch_username_by_id(user_id: str) -> str:
+    resp = requests.get(
+        f"https://discord.com/api/v10/users/{user_id}",
+        headers={"Authorization": f"Bot {DISCORD_TOKEN}"},
+    )
+    resp.raise_for_status()
+    return resp.json()["username"]
+
+
 CHARAKTER = fetch_bot_username()
+
+if _DM_BOT_ID and not DM_USERNAME:
+    try:
+        DM_USERNAME = fetch_username_by_id(_DM_BOT_ID).lower()
+        print(f"DM-Username ermittelt: {DM_USERNAME}")
+    except Exception as e:
+        print(f"WARNUNG: DM-Username konnte nicht abgerufen werden: {e}", file=sys.stderr)
 
 _LOCKFILE = Path(f"/tmp/player_agent_{CHARAKTER}.lock")
 try:
@@ -163,7 +189,8 @@ def build_system_prompt(personality: dict) -> str:
         "Antworte immer als dieser Charakter – in der ersten Person, auf Deutsch, in 1-3 Sätzen.",
         "Halte dich an die Spielmechanik und reagiere auf die letzte Nachricht des Dungeon Masters.",
         "WICHTIG: Bei Charaktererstellungs- oder Off-Game-Fragen (z.B. Klasse wählen, Attribute verteilen, Ausrüstung) antworte direkt und klar – kein Rollenspiel, keine Umschreibungen. Beantworte die Frage des Dungeon Masters präzise.",
-        "Du musst nicht auf jede Nachricht reagieren. Wenn du gerade nichts tun willst, nicht angesprochen bist oder Schweigen die beste Reaktion ist, antworte ausschließlich mit dem Token [SCHWEIGEN] – kein Text davor oder danach. Dann wird nichts nach Discord gesendet.",
+        "Du musst nicht auf jede Nachricht reagieren. Wenn du schweigen willst, antworte mit exakt diesem Text und nichts anderem: [SCHWEIGEN]",
+        f"Wenn dein Name fällt, beurteile selbst ob eine Reaktion sinnvoll ist. Schweige wenn: dein Name nur im Narrativ vorkommt ('{CHARAKTER}s Blick', 'er betrachtet {CHARAKTER}'), der DM gerade einen anderen Spieler direkt adressiert (z.B. Charaktererstellung, Einzelfragen an jemand anderen), oder du gerade nichts Sinnvolles beizutragen hast. Reagiere wenn: du direkt angesprochen wirst, eine Frage an dich gerichtet ist, oder eine Aktion dich unmittelbar betrifft. Im Zweifel: [SCHWEIGEN].",
     ]
     if bogen:
         parts.append(f"## Dein Charakterbogen\n{bogen}")
@@ -188,13 +215,19 @@ REGISTRATION_TRIGGERS = ["alle agenten", "alle spieler", "meldet euch", "registr
 STOP_TRIGGER = "🛑 **SPIEL GESTOPPT**"
 
 
-def should_respond(message_content: str) -> bool:
+def should_respond(message_content: str, author: str) -> bool:
     lower = message_content.lower()
-    if any(trigger in lower for trigger in GROUP_TRIGGERS):
+    # Always pass to LLM when character name is mentioned – LLM decides via [SCHWEIGEN]
+    if CHARAKTER.lower() in lower:
         return True
-    if any(trigger in lower for trigger in REGISTRATION_TRIGGERS):
-        return True
-    return CHARAKTER.lower() in lower
+    # Group/registration triggers only from the DM
+    is_dm = not DM_USERNAME or author.lower() == DM_USERNAME
+    if is_dm:
+        if any(trigger in lower for trigger in GROUP_TRIGGERS):
+            return True
+        if any(trigger in lower for trigger in REGISTRATION_TRIGGERS):
+            return True
+    return False
 
 
 def build_messages(recent_msgs: list[dict]) -> list[dict]:
@@ -226,31 +259,40 @@ def run():
             if new_msgs:
                 last_seen_ts = new_msgs[-1]["timestamp"]
                 save_last_seen_ts(last_seen_ts)
+
+                # Stop signal check
                 for msg in new_msgs:
-                    content = msg.get("content", "")
-                    author = (msg.get("author") or {}).get("username", "")
-                    if STOP_TRIGGER in content:
+                    if STOP_TRIGGER in msg.get("content", ""):
                         print(f"[{CHARAKTER}] Stop-Signal empfangen. Beende...")
                         sys.exit(0)
+
+                # Determine if any new message should trigger a reaction.
+                # We take the LAST triggering message but pass ALL new messages as
+                # context so the LLM sees the full picture and can use [SCHWEIGEN].
+                trigger_msg = None
+                for msg in new_msgs:
+                    author = (msg.get("author") or {}).get("username", "")
+                    content = msg.get("content", "")
                     if CHARAKTER.lower() == author.lower():
                         continue
-                    if not should_respond(content):
-                        continue
+                    if should_respond(content, author):
+                        trigger_msg = msg
+
+                if trigger_msg:
+                    trigger_content = trigger_msg.get("content", "")
                     personality = load_personality()
                     system_prompt = build_system_prompt(personality)
                     messages = build_messages(new_msgs)
-                    messages.append({"role": "user", "content": f"{author}: {content}"})
-                    print(f"[{CHARAKTER}] antwortet auf: {content[:60]}...")
+                    print(f"[{CHARAKTER}] prüft Reaktion auf: {trigger_content[:60]}...")
                     try:
                         response = adapter.complete(system_prompt, messages)
-                        if "[SCHWEIGEN]" in response:
-                            print(f"[{CHARAKTER}] → schweigt.")
-                            continue
-                        send_message(DISCORD_TOKEN, DISCORD_CHANNEL_ID, response)
-                        print(f"[{CHARAKTER}] → {response[:80]}...")
+                        if "schweigen" in response.lower():
+                            print(f"[{CHARAKTER}] → schweigt. Trigger: {trigger_content[:80]!r}")
+                        else:
+                            send_message(DISCORD_TOKEN, DISCORD_CHANNEL_ID, response)
+                            print(f"[{CHARAKTER}] → {response[:80]}...")
                     except Exception as e:
                         print(f"[{CHARAKTER}] Fehler: {e}", file=sys.stderr)
-                    time.sleep(1)
         except Exception as e:
             msg = str(e)
             if "429" in msg:
